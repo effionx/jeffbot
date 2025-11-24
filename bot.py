@@ -126,8 +126,11 @@ def load_state():
         return defaults
 
 def save_state(state):
-    try: with open(STATE_FILE, 'w') as f: json.dump(state, f, indent=4)
-    except Exception as e: logger.error(f"Failed to save state: {e}")
+    try:
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to save state: {e}")
 
 def get_ping_string():
     state = load_state()
@@ -172,7 +175,9 @@ def get_financial_detailed():
                     except: continue
             except: pass
 
-        parse_tab(TAB_DISCORD); parse_tab(TAB_FORM); parse_tab(TAB_OLD)
+        parse_tab(TAB_DISCORD)
+        parse_tab(TAB_FORM)
+        parse_tab(TAB_OLD)
         all_entries.sort(key=lambda x: x['ts'], reverse=True)
         stats["last_5"] = all_entries[:5]
 
@@ -308,16 +313,21 @@ async def manual_update_check(ctx):
 
 @bot.command(name="lt")
 async def list_timers(ctx):
-    state = load_state(); lines = ["**📜 Available Timer Configurations**", "\n**Standard:**"]
+    state = load_state()
+    lines = ["**📜 Available Timer Configurations**", "\n**Standard:**"]
     overrides = state.get("standard_overrides", {})
-    for k, v in STANDARD_DEFAULTS.items(): lines.append(f"`!{k}` : {overrides.get(k, v)}")
+    for k, v in STANDARD_DEFAULTS.items():
+        lines.append(f"`!{k}` : {overrides.get(k, v)}")
     lines.append("\n**Custom:**")
     customs = state.get("custom_cmds", {})
     if customs:
-        for k, v in customs.items(): lines.append(f"`!{k}` : {v}")
-    else: lines.append("_None_")
+        for k, v in customs.items():
+            lines.append(f"`!{k}` : {v}")
+    else:
+        lines.append("_None_")
     lines.append("\n**Instanced (Variable):**")
-    for k in INSTANCED_COMMANDS: lines.append(f"`!{k} [time]`")
+    for k in INSTANCED_COMMANDS:
+        lines.append(f"`!{k} [time]`")
     await ctx.send("\n".join(lines))
 
 @bot.command(name="ct")
@@ -325,7 +335,9 @@ async def create_timer(ctx, name: str=None, duration: str=None):
     if not name or not duration: return await ctx.send("❌ Usage: `!ct [name] [duration]`")
     name = name.lower()
     if parse_duration_string(duration) is None: return await ctx.send("❌ Invalid time.")
-    state = load_state(); state["custom_cmds"][name] = duration; save_state(state)
+    state = load_state()
+    state["custom_cmds"][name] = duration
+    save_state(state)
     if name in bot.all_commands: bot.remove_command(name)
     bot.add_command(make_custom_command(name, duration))
     await ctx.send(f"✅ Created **!{name}** ({duration})")
@@ -334,14 +346,17 @@ async def create_timer(ctx, name: str=None, duration: str=None):
 @bot.command(name="dt")
 async def delete_timer(ctx, name: str=None):
     if not name: return await ctx.send("❌ Usage: `!dt [name]`")
-    name = name.lower(); state = load_state(); deleted = False
+    name = name.lower()
+    state = load_state()
+    deleted = False
     if name in state["custom_cmds"]:
         del state["custom_cmds"][name]; deleted=True
         if name in bot.all_commands: bot.remove_command(name)
     to_del = [k for k in state["timers"] if k == name]
     for k in to_del: del state["timers"][k]; deleted=True
     if deleted:
-        save_state(state); await update_dashboards()
+        save_state(state)
+        await update_dashboards()
         await ctx.send(f"🗑️ Deleted **!{name}**")
         await log_to_channel("Timer Deleted", f"**{name}** deleted by {ctx.author.name}", discord.Color.red())
     else: await ctx.send("❌ Not found.")
@@ -349,9 +364,12 @@ async def delete_timer(ctx, name: str=None):
 @bot.command(name="rt")
 async def reset_timer(ctx, name: str=None):
     if not name: return await ctx.send("❌ Usage: `!rt [name]`")
-    name = name.lower(); state = load_state()
+    name = name.lower()
+    state = load_state()
     if name in state["timers"]:
-        del state["timers"][name]; save_state(state); await update_dashboards()
+        del state["timers"][name]
+        save_state(state)
+        await update_dashboards()
         await ctx.send(f"🔄 Timer **{name}** reset.")
         await log_to_channel("Timer Reset", f"**{name}** reset manually by {ctx.author.name}", discord.Color.orange())
     else: await ctx.send(f"❌ Active/Done timer **{name}** not found.")
@@ -363,12 +381,14 @@ async def edit_timer(ctx, name: str=None, duration: str=None):
     if parse_duration_string(duration) is None: return await ctx.send("❌ Invalid time.")
     state = load_state()
     if name in STANDARD_DEFAULTS:
-        state["standard_overrides"][name] = duration; save_state(state)
+        state["standard_overrides"][name] = duration
+        save_state(state)
         if name in bot.all_commands: bot.remove_command(name)
         bot.add_command(make_standard_command(name))
         await ctx.send(f"✏️ Updated standard **!{name}**")
     elif name in state["custom_cmds"]:
-        state["custom_cmds"][name] = duration; save_state(state)
+        state["custom_cmds"][name] = duration
+        save_state(state)
         if name in bot.all_commands: bot.remove_command(name)
         bot.add_command(make_custom_command(name, duration))
         await ctx.send(f"✏️ Updated custom **!{name}**")
@@ -378,20 +398,29 @@ async def edit_timer(ctx, name: str=None, duration: str=None):
 @bot.command(name="setrow")
 async def set_row(ctx, row: int=None):
     if not row: return await ctx.send("❌ Usage: `!setrow [number]`")
-    state = load_state(); old_row = state.get("last_form_row", 1)
-    state["last_form_row"] = row; save_state(state)
+    state = load_state()
+    old_row = state.get("last_form_row", 1)
+    state["last_form_row"] = row
+    save_state(state)
     await ctx.send(f"🛠 Row count changed from `{old_row}` to `{row}`.")
     await log_to_channel("Row Updated", f"Changed from {old_row} to {row} by {ctx.author.name}", discord.Color.orange())
 
 # --- SLASH COMMANDS ---
 @bot.tree.command(name="v", description="Toggle Vacation Mode")
 async def vacation(interaction: discord.Interaction):
-    user_id = interaction.user.id; state = load_state(); vacationers = state.get("vacation", [])
+    user_id = interaction.user.id
+    state = load_state()
+    vacationers = state.get("vacation", [])
     if user_id in vacationers:
-        vacationers.remove(user_id); status = "OFF"; msg = "Welcome back! You will now be tagged."
+        vacationers.remove(user_id)
+        status = "OFF"
+        msg = "Welcome back! You will now be tagged."
     else:
-        vacationers.append(user_id); status = "ON"; msg = "Enjoy your break! You will no longer be tagged."
-    state["vacation"] = vacationers; save_state(state)
+        vacationers.append(user_id)
+        status = "ON"
+        msg = "Enjoy your break! You will no longer be tagged."
+    state["vacation"] = vacationers
+    save_state(state)
     await interaction.response.send_message(f"🌴 Vacation Mode: **{status}**. {msg}", ephemeral=True)
     await log_to_channel("Vacation Toggle", f"{interaction.user.name} toggled vacation to {status}", discord.Color.teal())
 
@@ -401,11 +430,13 @@ async def slash_admin(interaction: discord.Interaction):
 
 @bot.tree.command(name="help", description="Show Bot Commands")
 async def slash_help(interaction: discord.Interaction):
-    state = load_state(); customs = state.get("custom_cmds", {})
+    state = load_state()
+    customs = state.get("custom_cmds", {})
     embed = discord.Embed(title="🤖 JEFBot Commands", color=discord.Color.gold())
     embed.add_field(name="⏱ Presets", value=", ".join([f"`!{k}`" for k in STANDARD_DEFAULTS]), inline=False)
     embed.add_field(name="🌱 Instanced", value="`!seedbed [time]`, `!kq [time]`", inline=False)
-    if customs: embed.add_field(name="⚡ Custom", value=", ".join([f"`!{k}` ({v})" for k, v in customs.items()]), inline=False)
+    if customs:
+        embed.add_field(name="⚡ Custom", value=", ".join([f"`!{k}` ({v})" for k, v in customs.items()]), inline=False)
     embed.add_field(name="🛠 Admin", value="`!ct`, `!et`, `!dt`, `!rt`, `!setrow`, `/createdemo`, `/prune`, `!lt`, `!update`", inline=False)
     embed.add_field(name="💰 Bank", value="`/bank`, `/deposit`, `/withdraw`", inline=False)
     embed.add_field(name="🌴 Misc", value="`/v` (Toggle Vacation)", inline=False)
@@ -433,8 +464,10 @@ async def bank(interaction: discord.Interaction):
 @app_commands.describe(location="Location Name", datetime_str="Format: 25.11.2025 00:30 (GB Time)")
 async def createdemo(interaction: discord.Interaction, location: str, datetime_str: str):
     await interaction.response.defer()
-    try: dt = GB_TZ.localize(datetime.strptime(datetime_str, "%d.%m.%Y %H:%M"))
-    except ValueError: return await interaction.followup.send("❌ Invalid format. Use `DD.MM.YYYY HH:MM`")
+    try:
+        dt = GB_TZ.localize(datetime.strptime(datetime_str, "%d.%m.%Y %H:%M"))
+    except ValueError:
+        return await interaction.followup.send("❌ Invalid format. Use `DD.MM.YYYY HH:MM`")
     t_3h, t_1h, t_10m = dt-timedelta(hours=3), dt-timedelta(hours=1), dt-timedelta(minutes=10)
     now = get_gb_time()
     forum = bot.get_channel(DEMO_FORUM_ID)
@@ -442,16 +475,23 @@ async def createdemo(interaction: discord.Interaction, location: str, datetime_s
         await forum.create_thread(name=f"{location} - {dt.strftime('%d/%m')}", content=(f"**Demo Scheduled**\n📍 **Location:** {location}\n📅 **Time:** <t:{int(dt.timestamp())}:F>\n{get_ping_string()}"))
     state = load_state()
     if dt > now:
-        state['timers'][f"demo_{location}_main"] = {"end_time": int(dt.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo {location}", "hidden": False}
+        state['timers'][f"demo_{location}_main"] = {
+            "end_time": int(dt.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo {location}", "hidden": False
+        }
     for lbl, obj in [("3h", t_3h), ("1h", t_1h), ("10m", t_10m)]:
-        if obj > now: state['timers'][f"demo_{location}_{lbl}"] = {"end_time": int(obj.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo Alert {location} {lbl}", "hidden": True}
-    save_state(state); await update_dashboards()
+        if obj > now:
+            state['timers'][f"demo_{location}_{lbl}"] = {
+                "end_time": int(obj.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo Alert {location} {lbl}", "hidden": True
+            }
+    save_state(state)
+    await update_dashboards()
     await interaction.followup.send(f"✅ Demo set for {location} at <t:{int(dt.timestamp())}:f>.")
     await log_to_channel("Demo Created", f"Demo at {location} for {datetime_str} created by {interaction.user.name}", discord.Color.purple())
 
 @bot.tree.command(name="prune", description="Delete messages (Protected)")
 async def prune(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_messages: return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    if not interaction.user.guild_permissions.manage_messages:
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     await interaction.channel.purge(limit=None, check=lambda m: not m.pinned)
     await interaction.followup.send("🧹 Channel pruned (Pins protected).", ephemeral=True)
@@ -467,32 +507,46 @@ async def withdraw(interaction: discord.Interaction, category: app_commands.Choi
     await handle_transaction(interaction, "Regrades" if category.value == "Regrades" else "Withdraw", -abs(gold), description)
 
 def get_mapped_name(user: discord.User): return PLAYER_MAP.get(user.id, user.display_name)
+
 async def handle_transaction(interaction, type_str, gold_amt, desc_str):
-    await interaction.response.defer(); client = get_gspread_client()
+    await interaction.response.defer()
+    client = get_gspread_client()
     if not client: return await interaction.followup.send("❌ DB Error")
     try:
-        ts = get_gb_time().strftime("%Y-%m-%d %H:%M:%S"); sheet = client.open(SHEET_NAME).worksheet(TAB_DISCORD)
-        player = get_mapped_name(interaction.user); sheet.append_row([ts, player, type_str, gold_amt, desc_str])
+        ts = get_gb_time().strftime("%Y-%m-%d %H:%M:%S")
+        sheet = client.open(SHEET_NAME).worksheet(TAB_DISCORD)
+        player = get_mapped_name(interaction.user)
+        sheet.append_row([ts, player, type_str, gold_amt, desc_str])
         color = discord.Color.green() if gold_amt > 0 else discord.Color.red()
         embed = discord.Embed(title=f"💰 {type_str}", color=color)
-        embed.add_field(name="Player", value=player); embed.add_field(name="Gold", value=str(gold_amt)); embed.add_field(name="Desc", value=desc_str)
-        await interaction.followup.send(embed=embed); await update_dashboards()
+        embed.add_field(name="Player", value=player)
+        embed.add_field(name="Gold", value=str(gold_amt))
+        embed.add_field(name="Desc", value=desc_str)
+        await interaction.followup.send(embed=embed)
+        await update_dashboards()
         await log_to_channel("Transaction", f"{player} logged {type_str}: {gold_amt}g", color)
-    except Exception as e: logger.error(f"Tx Error: {e}"); await interaction.followup.send(f"Error: {e}")
+    except Exception as e:
+        logger.error(f"Tx Error: {e}")
+        await interaction.followup.send(f"Error: {e}")
 
 # --- TASKS ---
 @tasks.loop(minutes=1)
 async def scheduler_task():
-    now = get_gb_time(); today_str = now.strftime("%Y-%m-%d"); state = load_state()
+    now = get_gb_time()
+    today_str = now.strftime("%Y-%m-%d")
+    state = load_state()
     is_time = (now.hour == 4 and now.minute == 30)
     is_late = (now.hour >= 4 and (now.hour > 4 or now.minute > 30)) and (state.get("last_motd_date") != today_str)
     if is_time or is_late:
-        weekday = now.weekday(); msg = None
+        weekday = now.weekday()
+        msg = None
         if weekday == 4: msg = "Pick DS quest AT today"
         elif weekday == 5: msg = "Fish AT today\nDGS AT today\nLib AT today"
         elif weekday == 6: msg = "Anth AT today"
         if msg:
-            state["motd"] = msg; state["last_motd_date"] = today_str; save_state(state)
+            state["motd"] = msg
+            state["last_motd_date"] = today_str
+            save_state(state)
             if is_time:
                 chan = bot.get_channel(PINNED_CHANNEL_ID)
                 if chan: await chan.send(f"📢 **DAILY REMINDER**\n{msg}")
@@ -500,13 +554,19 @@ async def scheduler_task():
 
 @bot.tree.command(name="refresh", description="Force update")
 async def refresh(interaction: discord.Interaction):
-    await interaction.response.defer(); await run_sheet_check(True); await update_dashboards()
+    await interaction.response.defer()
+    await run_sheet_check(True)
+    await update_dashboards()
     await interaction.followup.send("Updated.")
 
 @bot.event
 async def on_ready():
-    logger.info(f'Logged in as {bot.user}'); register_commands()
-    try: guild = bot.get_channel(PINNED_CHANNEL_ID).guild; bot.tree.copy_global_to(guild=guild); await bot.tree.sync(guild=guild)
+    logger.info(f'Logged in as {bot.user}')
+    register_commands()
+    try:
+        guild = bot.get_channel(PINNED_CHANNEL_ID).guild
+        bot.tree.copy_global_to(guild=guild)
+        await bot.tree.sync(guild=guild)
     except: pass
     if not background_sheet_check.is_running(): background_sheet_check.start()
     if not timer_monitor.is_running(): timer_monitor.start()
@@ -515,6 +575,7 @@ async def on_ready():
     if not hourly_state_backup.is_running(): hourly_state_backup.start()
     if not channel_wiper.is_running(): channel_wiper.start()
     if not github_monitor.is_running(): github_monitor.start()
+    
     chan = bot.get_channel(PINNED_CHANNEL_ID)
     if chan: await chan.send(f"🤖 **JEFFBANK IS AWAKE** ({BOT_VERSION})")
 
@@ -552,29 +613,40 @@ async def github_monitor():
 
 @tasks.loop(seconds=60)
 async def timer_monitor():
-    state = load_state(); timers = state.get("timers", {}); dirty = False; now = int(time.time())
+    state = load_state()
+    timers = state.get("timers", {})
+    dirty = False
+    now = int(time.time())
     for name, data in list(timers.items()):
         if data['status'] == 'running' and now >= data['end_time']:
             channel = bot.get_channel(PINNED_CHANNEL_ID)
             if channel:
                 try:
-                    d_name = data.get('display', name.capitalize()); ping = get_ping_string()
+                    d_name = data.get('display', name.capitalize())
+                    ping = get_ping_string()
                     if "demo" in name and "hidden" in data and data['hidden']:
                         msg = await channel.send(f"⚠️ **ALERT:** {d_name} is coming up! {ping}")
                     else:
                         msg = await channel.send(f"⏰ **{d_name} IS UP!** {ping}")
                         await log_to_channel("Timer Expired", f"{d_name} expired", discord.Color.gold())
-                    if "hidden" in data and data['hidden']: del timers[name]
-                    else: data['status'] = 'expired'; data['msg_id'] = msg.id 
+                    if "hidden" in data and data['hidden']:
+                        del timers[name]
+                    else:
+                        data['status'] = 'expired'
+                        data['msg_id'] = msg.id 
                     dirty = True
                 except: pass
-    if dirty: save_state(state); await update_dashboards()
+    if dirty:
+        save_state(state)
+        await update_dashboards()
 
 @tasks.loop(minutes=10)
 async def update_pinned_message(): await update_dashboards()
+
 @tasks.loop(hours=1)
 async def hourly_state_backup():
-    state = load_state(); state_str = json.dumps(state, indent=2)
+    state = load_state()
+    state_str = json.dumps(state, indent=2)
     if len(state_str) > 1900: state_str = state_str[:1900] + "\n...[TRUNCATED]"
     await log_to_channel("Hourly State Backup", f"```json\n{state_str}\n```", discord.Color.dark_grey())
 
@@ -582,56 +654,88 @@ async def run_sheet_check(manual):
     client = get_gspread_client()
     if not client: return
     try:
-        sheet = client.open(SHEET_NAME).worksheet(TAB_FORM); all_rows = sheet.get_all_values()
-        current = len(all_rows); state = load_state(); last = max(state.get("last_form_row", 1), 1); count = 0
+        sheet = client.open(SHEET_NAME).worksheet(TAB_FORM)
+        all_rows = sheet.get_all_values()
+        current = len(all_rows)
+        state = load_state()
+        last = max(state.get("last_form_row", 1), 1)
+        count = 0
         if current > last:
             chan = bot.get_channel(PINNED_CHANNEL_ID)
             for i in range(last, current):
-                r = all_rows[i]; 
+                r = all_rows[i]
                 if not any(r): continue
                 while len(r) < 5: r.append("")
                 embed = discord.Embed(title="💸 Form Update", color=discord.Color.blue())
-                embed.add_field(name="Player", value=r[1]); embed.add_field(name="Gold", value=r[3])
-                embed.add_field(name="Type", value=r[2]); embed.set_footer(text=r[0])
+                embed.add_field(name="Player", value=r[1])
+                embed.add_field(name="Gold", value=r[3])
+                embed.add_field(name="Type", value=r[2])
+                embed.set_footer(text=r[0])
                 if chan: await chan.send(embed=embed)
                 count += 1
-            state["last_form_row"] = current; save_state(state)
+            state["last_form_row"] = current
+            save_state(state)
         if not manual: await log_to_channel("Sheet Check", f"Checked Form. Current Row: {current}. New Entries: {count}", discord.Color.light_gray())
     except Exception as e: await log_to_channel("Sheet Check Error", str(e), discord.Color.red())
 
 async def update_dashboards():
     channel = bot.get_channel(PINNED_CHANNEL_ID)
     if not channel: return
-    state = load_state(); stats = get_financial_detailed(); timers = state.get("timers", {}); now_gb = get_gb_time(); now_ts = int(time.time())
+    state = load_state()
+    stats = get_financial_detailed()
+    timers = state.get("timers", {})
+    now_gb = get_gb_time()
+    now_ts = int(time.time())
     fin_lines = [HEADER_FIN]
     if stats:
-        fin_lines.extend([f"Last Restart: <t:{START_TIME}:f>", f"Current Gbank: **{stats['gbank_val']}**", f"Top Contributions: **{stats['top_categories']}**",
-        f"Last Refresh: <t:{int(now_gb.timestamp())}:f>", "---",
-        f"**Today:** In {stats['today']['in']} | Out {stats['today']['out']} | Net {stats['today']['net']}",
-        f"**Week:** In {stats['week']['in']} | Out {stats['week']['out']} | Net {stats['week']['net']}",
-        f"**Month:** In {stats['month']['in']} | Out {stats['month']['out']} | Net {stats['month']['net']}", "---"])
+        fin_lines.extend([
+            f"Last Restart: <t:{START_TIME}:f>",
+            f"Current Gbank: **{stats['gbank_val']}**",
+            f"Top Contributions: **{stats['top_categories']}**",
+            f"Last Refresh: <t:{int(now_gb.timestamp())}:f>",
+            "---",
+            f"**Today:** In {stats['today']['in']} | Out {stats['today']['out']} | Net {stats['today']['net']}",
+            f"**Week:** In {stats['week']['in']} | Out {stats['week']['out']} | Net {stats['week']['net']}",
+            f"**Month:** In {stats['month']['in']} | Out {stats['month']['out']} | Net {stats['month']['net']}",
+            "---"
+        ])
     timer_lines = [HEADER_TIMER]
-    if state.get("motd"): timer_lines.append(f"\n📢 **TODAY:**\n{state['motd']}\n")
-    list_today = []; list_later = []; list_done = []
+    if state.get("motd"):
+        timer_lines.append(f"\n📢 **TODAY:**\n{state['motd']}\n")
+    list_today = []
+    list_later = []
+    list_done = []
     for name, data in sorted(timers.items(), key=lambda x: x[1].get('end_time', 0)):
         if data.get('hidden'): continue
         d_name = data.get('display', name.capitalize())
         if data['status'] == 'running':
             t_str = f"• **{d_name}**: <t:{data['end_time']}:R>"
-            if (data['end_time'] - now_ts) > 86400: list_later.append(t_str)
-            else: list_today.append(t_str)
-        elif data['status'] == 'expired': list_done.append(f"• **{d_name}** (<t:{data['end_time']}:R>)")
-    timer_lines.append("**Timers (Today)**"); timer_lines.extend(list_today if list_today else ["_None_"])
-    timer_lines.append("\n**Timers (1d+)**"); timer_lines.extend(list_later if list_later else ["_None_"])
-    timer_lines.append("\n**Timers (DONE)**"); timer_lines.extend(list_done if list_done else ["_None_"])
+            if (data['end_time'] - now_ts) > 86400:
+                list_later.append(t_str)
+            else:
+                list_today.append(t_str)
+        elif data['status'] == 'expired':
+            list_done.append(f"• **{d_name}** (<t:{data['end_time']}:R>)")
+    timer_lines.append("**Timers (Today)**")
+    timer_lines.extend(list_today if list_today else ["_None_"])
+    timer_lines.append("\n**Timers (1d+)**")
+    timer_lines.extend(list_later if list_later else ["_None_"])
+    timer_lines.append("\n**Timers (DONE)**")
+    timer_lines.extend(list_done if list_done else ["_None_"])
     try:
         history = await channel.pins()
         msg_fin = next((m for m in history if m.author == bot.user and HEADER_FIN in m.content), None)
-        if msg_fin: await msg_fin.edit(content="\n".join(fin_lines))
-        else: n = await channel.send("\n".join(fin_lines)); await n.pin()
+        if msg_fin:
+            await msg_fin.edit(content="\n".join(fin_lines))
+        else:
+            n = await channel.send("\n".join(fin_lines))
+            await n.pin()
         msg_tim = next((m for m in history if m.author == bot.user and HEADER_TIMER in m.content), None)
-        if msg_tim: await msg_tim.edit(content="\n".join(timer_lines))
-        else: n = await channel.send("\n".join(timer_lines)); await n.pin()
+        if msg_tim:
+            await msg_tim.edit(content="\n".join(timer_lines))
+        else:
+            n = await channel.send("\n".join(timer_lines))
+            await n.pin()
     except: pass
 
 bot.run(TOKEN)
