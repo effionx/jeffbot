@@ -638,7 +638,7 @@ async def channel_wiper():
     except Exception as e:
         logger.error(f"Wipe error: {e}")
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=1)
 async def github_monitor():
     """Checks for updates from GitHub Raw Link and restarts if found"""
     if not UPDATE_URL or "http" not in UPDATE_URL: return
