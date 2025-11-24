@@ -10,7 +10,7 @@ import os
 import logging
 import re
 import sys
-import requests # NEW: Required for raw link updates
+import requests # Requires: pip install requests
 from datetime import datetime, timedelta
 import pytz
 from dateutil import parser
@@ -18,9 +18,8 @@ from dotenv import load_dotenv
 from collections import defaultdict
 
 # --- CONFIGURATION ---
-# PASTE YOUR GITHUB RAW LINK HERE
-# Example: "https://raw.githubusercontent.com/YourName/YourRepo/main/bot.py"
-UPDATE_URL = "YOUR_RAW_GITHUB_LINK_HERE" 
+# The bot checks this URL every 5 minutes for changes
+UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
 
 logging.basicConfig(
     level=logging.INFO,
