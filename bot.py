@@ -622,7 +622,7 @@ async def on_ready():
     if not github_monitor.is_running(): github_monitor.start()
     
     chan = bot.get_channel(PINNED_CHANNEL_ID)
-    if chan: await chan.send("🤖 **JEFFBANK IS AWAKE**")
+    if chan: await chan.send("🤖 **JEFFBANK IS AWAKE v1**")
 
 @tasks.loop(minutes=60)
 async def background_sheet_check(): await run_sheet_check(False)
