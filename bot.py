@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "0.01"
+BOT_VERSION = "v0.01"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -523,23 +523,15 @@ async def background_sheet_check(): await run_sheet_check(False)
 
 @tasks.loop(minutes=2)
 async def channel_wiper():
-    """Wipes the pinned channel of all non-pinned messages every 2 minutes"""
     try:
         channel = bot.get_channel(PINNED_CHANNEL_ID)
         if not channel: return
-        
-        # LOGIC:
-        # 1. Keep Pinned messages
-        # 2. Keep messages from Bot that are Alerts ("IS UP!" or "ALERT")
-        # 3. Delete everything else
         def should_delete(m):
             if m.pinned: return False
             if m.author == bot.user and ("IS UP!" in m.content or "ALERT" in m.content): return False
             return True
-
         await channel.purge(limit=100, check=should_delete)
-    except Exception as e:
-        logger.error(f"Wipe error: {e}")
+    except Exception as e: logger.error(f"Wipe error: {e}")
 
 @tasks.loop(minutes=5)
 async def github_monitor():
