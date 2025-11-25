@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.01"
+BOT_VERSION = "v0.04"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -537,20 +537,28 @@ async def scheduler_task():
     state = load_state()
     is_time = (now.hour == 4 and now.minute == 30)
     is_late = (now.hour >= 4 and (now.hour > 4 or now.minute > 30)) and (state.get("last_motd_date") != today_str)
+    
     if is_time or is_late:
         weekday = now.weekday()
         msg = None
         if weekday == 4: msg = "Pick DS quest AT today"
         elif weekday == 5: msg = "Fish AT today\nDGS AT today\nLib AT today"
         elif weekday == 6: msg = "Anth AT today"
+        
+        # LOGIC FIX: Always update MOTD. If no msg, clear it.
         if msg:
             state["motd"] = msg
-            state["last_motd_date"] = today_str
-            save_state(state)
-            if is_time:
-                chan = bot.get_channel(PINNED_CHANNEL_ID)
-                if chan: await chan.send(f"📢 **DAILY REMINDER**\n{msg}")
-            await update_dashboards()
+        else:
+            state["motd"] = ""
+            
+        state["last_motd_date"] = today_str
+        save_state(state)
+        
+        if is_time and msg:
+            chan = bot.get_channel(PINNED_CHANNEL_ID)
+            if chan: await chan.send(f"📢 **DAILY REMINDER**\n{msg}")
+        
+        await update_dashboards()
 
 @bot.tree.command(name="refresh", description="Force update")
 async def refresh(interaction: discord.Interaction):
@@ -611,13 +619,18 @@ async def github_monitor():
                 os.execv(sys.executable, ['python'] + sys.argv)
     except Exception as e: logger.error(f"GitHub Monitor Error: {e}")
 
-@tasks.loop(seconds=60)
+# UPDATED LOOP TIME TO 1 SECOND
+@tasks.loop(seconds=1)
 async def timer_monitor():
     state = load_state()
     timers = state.get("timers", {})
     dirty = False
     now = int(time.time())
+    
+    # Iterate safely over copy
     for name, data in list(timers.items()):
+        
+        # 1. Check for Running -> Expired
         if data['status'] == 'running' and now >= data['end_time']:
             channel = bot.get_channel(PINNED_CHANNEL_ID)
             if channel:
@@ -636,6 +649,17 @@ async def timer_monitor():
                         data['msg_id'] = msg.id 
                     dirty = True
                 except: pass
+        
+        # 2. Check for Expired -> Auto-Delete
+        # Logic: Only delete if it is "seedbed", "kq", or "demo" AND 24h passed
+        elif data['status'] == 'expired':
+            is_temp = any(name.startswith(p) for p in ["seedbed", "kq", "demo"])
+            
+            # 86400 seconds = 24 hours
+            if is_temp and now > (data['end_time'] + 86400):
+                del timers[name]
+                dirty = True
+
     if dirty:
         save_state(state)
         await update_dashboards()
