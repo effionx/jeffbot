@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.04"
+BOT_VERSION = "v0.06"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -330,6 +330,16 @@ async def list_timers(ctx):
         lines.append(f"`!{k} [time]`")
     await ctx.send("\n".join(lines))
 
+@bot.command(name="tt")
+async def temp_timer(ctx, name: str=None, duration: str=None):
+    if not name or not duration: return await ctx.send("❌ Usage: `!tt [name] [duration]`")
+    dur = parse_duration_string(duration)
+    if not dur: return await ctx.send("❌ Invalid time.")
+    
+    # Prefix "tt_" for internal identification
+    unique_id = f"tt_{name.lower()}"
+    await start_timer_execution(ctx, unique_id, dur, display_name=name)
+
 @bot.command(name="ct")
 async def create_timer(ctx, name: str=None, duration: str=None):
     if not name or not duration: return await ctx.send("❌ Usage: `!ct [name] [duration]`")
@@ -437,7 +447,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="🌱 Instanced", value="`!seedbed [time]`, `!kq [time]`", inline=False)
     if customs:
         embed.add_field(name="⚡ Custom", value=", ".join([f"`!{k}` ({v})" for k, v in customs.items()]), inline=False)
-    embed.add_field(name="🛠 Admin", value="`!ct`, `!et`, `!dt`, `!rt`, `!setrow`, `/createdemo`, `/prune`, `!lt`, `!update`", inline=False)
+    embed.add_field(name="🛠 Admin", value="`!ct`, `!et`, `!dt`, `!rt`, `!setrow`, `!tt`, `/createdemo`, `/prune`, `!lt`, `!update`", inline=False)
     embed.add_field(name="💰 Bank", value="`/bank`, `/deposit`, `/withdraw`", inline=False)
     embed.add_field(name="🌴 Misc", value="`/v` (Toggle Vacation)", inline=False)
     await interaction.response.send_message(embed=embed)
@@ -545,7 +555,6 @@ async def scheduler_task():
         elif weekday == 5: msg = "Fish AT today\nDGS AT today\nLib AT today"
         elif weekday == 6: msg = "Anth AT today"
         
-        # LOGIC FIX: Always update MOTD. If no msg, clear it.
         if msg:
             state["motd"] = msg
         else:
@@ -619,7 +628,6 @@ async def github_monitor():
                 os.execv(sys.executable, ['python'] + sys.argv)
     except Exception as e: logger.error(f"GitHub Monitor Error: {e}")
 
-# UPDATED LOOP TIME TO 1 SECOND
 @tasks.loop(seconds=1)
 async def timer_monitor():
     state = load_state()
@@ -627,7 +635,6 @@ async def timer_monitor():
     dirty = False
     now = int(time.time())
     
-    # Iterate safely over copy
     for name, data in list(timers.items()):
         
         # 1. Check for Running -> Expired
@@ -651,14 +658,19 @@ async def timer_monitor():
                 except: pass
         
         # 2. Check for Expired -> Auto-Delete
-        # Logic: Only delete if it is "seedbed", "kq", or "demo" AND 24h passed
         elif data['status'] == 'expired':
-            is_temp = any(name.startswith(p) for p in ["seedbed", "kq", "demo"])
             
-            # 86400 seconds = 24 hours
-            if is_temp and now > (data['end_time'] + 86400):
-                del timers[name]
-                dirty = True
+            # A) Fast cleanup (1 hour) for seedbed/kq
+            if any(name.startswith(p) for p in ["seedbed", "kq"]):
+                if now > (data['end_time'] + 3600): # 1 hr
+                    del timers[name]
+                    dirty = True
+                    
+            # B) Slow cleanup (24 hours) for demo/tt
+            elif any(name.startswith(p) for p in ["demo", "tt_"]):
+                if now > (data['end_time'] + 86400): # 24 hr
+                    del timers[name]
+                    dirty = True
 
     if dirty:
         save_state(state)
