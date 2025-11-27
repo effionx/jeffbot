@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.06"
+BOT_VERSION = "v0.07"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -555,6 +555,7 @@ async def scheduler_task():
         elif weekday == 5: msg = "Fish AT today\nDGS AT today\nLib AT today"
         elif weekday == 6: msg = "Anth AT today"
         
+        # LOGIC FIX: Always update MOTD. If no msg, clear it.
         if msg:
             state["motd"] = msg
         else:
@@ -599,17 +600,37 @@ async def on_ready():
 @tasks.loop(minutes=60)
 async def background_sheet_check(): await run_sheet_check(False)
 
+# UPDATED WIPER LOGIC: 12 PM Threshold
 @tasks.loop(minutes=2)
 async def channel_wiper():
     try:
         channel = bot.get_channel(PINNED_CHANNEL_ID)
         if not channel: return
+        
+        now = get_gb_time()
+        # Midnight today (e.g., 00:00:00 on Tuesday)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Determine the cutoff time based on current hour
+        if now.hour >= 12:
+            # It's after noon. Cutoff is midnight today.
+            # (Delete everything from yesterday and before)
+            cutoff = today_midnight
+        else:
+            # It's before noon. Cutoff is midnight yesterday.
+            # (Keep yesterday, delete older)
+            cutoff = today_midnight - timedelta(days=1)
+
         def should_delete(m):
             if m.pinned: return False
-            if m.author == bot.user and ("IS UP!" in m.content or "ALERT" in m.content): return False
-            return True
-        await channel.purge(limit=100, check=should_delete)
-    except Exception as e: logger.error(f"Wipe error: {e}")
+            # Check if message is older than cutoff
+            # Note: m.created_at is UTC. Convert to GB_TZ to compare.
+            msg_time = m.created_at.astimezone(GB_TZ)
+            return msg_time < cutoff
+
+        await channel.purge(limit=500, check=should_delete)
+    except Exception as e:
+        logger.error(f"Wipe error: {e}")
 
 @tasks.loop(minutes=5)
 async def github_monitor():
