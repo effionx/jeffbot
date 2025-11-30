@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.07"
+BOT_VERSION = "v0.09"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,6 +61,10 @@ STANDARD_DEFAULTS = {
     "pigs": "6h"
 }
 INSTANCED_COMMANDS = ["seedbed", "kq"]
+
+# Lending Config
+LOAN_MAX_DAYS = 20
+LOAN_CAP_PERCENT = 0.50 # 50%
 
 # --- BOT SETUP ---
 intents = discord.Intents.default()
@@ -108,11 +112,14 @@ async def log_to_channel(title, description, color=discord.Color.light_grey):
         await channel.send(embed=embed)
     except Exception as e: logger.error(f"Failed to log: {e}")
 
+def get_mapped_name(user: discord.User): return PLAYER_MAP.get(user.id, user.display_name)
+
 # --- STATE MANAGEMENT ---
 def load_state():
     defaults = {
         "timers": {}, "custom_cmds": {}, "standard_overrides": {}, 
-        "motd": "", "last_motd_date": "", "last_form_row": 1, "vacation": [] 
+        "motd": "", "last_motd_date": "", "last_form_row": 1, 
+        "vacation": [], "debts": {} 
     }
     if not os.path.exists(STATE_FILE): return defaults
     try:
@@ -141,6 +148,18 @@ def get_ping_string():
     return " ".join(pings) if pings else "*(No active users)*"
 
 # --- FINANCIAL LOGIC ---
+def get_gbank_balance(client=None):
+    if not client: client = get_gspread_client()
+    if not client: return 0
+    try:
+        wb = client.open(SHEET_NAME)
+        val_str = wb.worksheet(TAB_DASHBOARD).acell('B2').value
+        # Clean string "34,200g" -> 34200
+        clean = str(val_str).lower().replace('g', '').replace(',', '').strip()
+        return int(clean)
+    except:
+        return 0
+
 def get_financial_detailed():
     client = get_gspread_client()
     if not client: return None
@@ -298,7 +317,6 @@ async def manual_update_check(ctx):
             current_code = ""
             with open(__file__, 'r', encoding='utf-8') as f: current_code = f.read()
             
-            # Sanitize comparison (remove trailing whitespace/newlines)
             if current_code.strip() != new_code.strip():
                 await msg.edit(content="✅ Update found! Overwriting and restarting...")
                 await log_to_channel("Manual Update", f"Update triggered by {ctx.author.name}", discord.Color.purple())
@@ -336,9 +354,9 @@ async def temp_timer(ctx, name: str=None, duration: str=None):
     dur = parse_duration_string(duration)
     if not dur: return await ctx.send("❌ Invalid time.")
     
-    # Prefix "tt_" for internal identification
     unique_id = f"tt_{name.lower()}"
     await start_timer_execution(ctx, unique_id, dur, display_name=name)
+    await ctx.send(f"✅ Temporary timer **{name}** started for **{duration}**.")
 
 @bot.command(name="ct")
 async def create_timer(ctx, name: str=None, duration: str=None):
@@ -416,6 +434,107 @@ async def set_row(ctx, row: int=None):
     await log_to_channel("Row Updated", f"Changed from {old_row} to {row} by {ctx.author.name}", discord.Color.orange())
 
 # --- SLASH COMMANDS ---
+@bot.tree.command(name="lend", description="Borrow gold from bank")
+async def lend(interaction: discord.Interaction, amount: int):
+    if amount <= 0: return await interaction.response.send_message("❌ Amount must be positive.", ephemeral=True)
+    await interaction.response.defer()
+    
+    # 1. Fetch current bank balance
+    client = get_gspread_client()
+    if not client: return await interaction.followup.send("❌ DB Error")
+    current_gbank = get_gbank_balance(client)
+    
+    # 2. Check Constraints
+    cap = int(current_gbank * LOAN_CAP_PERCENT)
+    user_id_str = str(interaction.user.id)
+    state = load_state()
+    current_debt = state.get("debts", {}).get(user_id_str, 0)
+    
+    if (current_debt + amount) > cap:
+        return await interaction.followup.send(
+            f"❌ **Loan Denied**\n"
+            f"Bank Balance: {current_gbank}g\n"
+            f"Max Loan Cap (50%): {cap}g\n"
+            f"Your Current Debt: {current_debt}g\n"
+            f"Requested: {amount}g\n"
+            f"Available to you: {max(0, cap - current_debt)}g"
+        )
+    
+    # 3. Process Loan
+    try:
+        # Update Debt
+        if "debts" not in state: state["debts"] = {}
+        state["debts"][user_id_str] = current_debt + amount
+        
+        # Set Loan Timer (20 days) - HIDDEN from board
+        loan_timer_id = f"loan_{user_id_str}"
+        end_time = int(time.time()) + (LOAN_MAX_DAYS * 86400)
+        state['timers'][loan_timer_id] = {
+            "end_time": end_time, 
+            "channel_id": PINNED_CHANNEL_ID, 
+            "status": "running", 
+            "display": f"Loan Due ({interaction.user.display_name})", 
+            "hidden": True  # <--- CHANGED TO TRUE
+        }
+        save_state(state)
+        
+        # Log to Sheet (Withdraw)
+        ts = get_gb_time().strftime("%Y-%m-%d %H:%M:%S")
+        sheet = client.open(SHEET_NAME).worksheet(TAB_DISCORD)
+        player = get_mapped_name(interaction.user)
+        sheet.append_row([ts, player, "Withdraw", -amount, "Loan"])
+        
+        # Reply
+        await interaction.followup.send(f"✅ **Loan Approved**: {amount}g sent to {player}. Due in 20 days.")
+        await update_dashboards()
+        await log_to_channel("Loan", f"{player} borrowed {amount}g. Total Debt: {state['debts'][user_id_str]}g", discord.Color.gold())
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error processing loan: {e}")
+
+@bot.tree.command(name="return", description="Return borrowed gold")
+async def return_loan(interaction: discord.Interaction, amount: int):
+    if amount <= 0: return await interaction.response.send_message("❌ Amount must be positive.", ephemeral=True)
+    await interaction.response.defer()
+    
+    state = load_state()
+    user_id_str = str(interaction.user.id)
+    current_debt = state.get("debts", {}).get(user_id_str, 0)
+    
+    if current_debt == 0:
+        return await interaction.followup.send("✅ You have no active debts!")
+        
+    try:
+        # 1. Update Debt
+        new_debt = max(0, current_debt - amount)
+        state["debts"][user_id_str] = new_debt
+        
+        # 2. Check if paid off
+        if new_debt == 0:
+            loan_timer_id = f"loan_{user_id_str}"
+            if loan_timer_id in state['timers']:
+                del state['timers'][loan_timer_id]
+        
+        save_state(state)
+        
+        # 3. Log to Sheet (Deposit)
+        client = get_gspread_client()
+        ts = get_gb_time().strftime("%Y-%m-%d %H:%M:%S")
+        sheet = client.open(SHEET_NAME).worksheet(TAB_DISCORD)
+        player = get_mapped_name(interaction.user)
+        sheet.append_row([ts, player, "Deposit", amount, "Loan Return"])
+        
+        msg = f"✅ **Returned**: {amount}g."
+        if new_debt > 0: msg += f" Remaining Debt: {new_debt}g."
+        else: msg += " 🎉 **Debt Paid Off!**"
+        
+        await interaction.followup.send(msg)
+        await update_dashboards()
+        await log_to_channel("Return", f"{player} returned {amount}g. Remaining: {new_debt}g", discord.Color.green())
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error processing return: {e}")
+
 @bot.tree.command(name="v", description="Toggle Vacation Mode")
 async def vacation(interaction: discord.Interaction):
     user_id = interaction.user.id
@@ -448,7 +567,7 @@ async def slash_help(interaction: discord.Interaction):
     if customs:
         embed.add_field(name="⚡ Custom", value=", ".join([f"`!{k}` ({v})" for k, v in customs.items()]), inline=False)
     embed.add_field(name="🛠 Admin", value="`!ct`, `!et`, `!dt`, `!rt`, `!setrow`, `!tt`, `/createdemo`, `/prune`, `!lt`, `!update`", inline=False)
-    embed.add_field(name="💰 Bank", value="`/bank`, `/deposit`, `/withdraw`", inline=False)
+    embed.add_field(name="💰 Bank", value="`/bank`, `/deposit`, `/withdraw`, `/lend`, `/return`", inline=False)
     embed.add_field(name="🌴 Misc", value="`/v` (Toggle Vacation)", inline=False)
     await interaction.response.send_message(embed=embed)
 
@@ -516,8 +635,6 @@ async def deposit(interaction: discord.Interaction, type: app_commands.Choice[st
 async def withdraw(interaction: discord.Interaction, category: app_commands.Choice[str], gold: int, description: str):
     await handle_transaction(interaction, "Regrades" if category.value == "Regrades" else "Withdraw", -abs(gold), description)
 
-def get_mapped_name(user: discord.User): return PLAYER_MAP.get(user.id, user.display_name)
-
 async def handle_transaction(interaction, type_str, gold_amt, desc_str):
     await interaction.response.defer()
     client = get_gspread_client()
@@ -547,27 +664,19 @@ async def scheduler_task():
     state = load_state()
     is_time = (now.hour == 4 and now.minute == 30)
     is_late = (now.hour >= 4 and (now.hour > 4 or now.minute > 30)) and (state.get("last_motd_date") != today_str)
-    
     if is_time or is_late:
         weekday = now.weekday()
         msg = None
         if weekday == 4: msg = "Pick DS quest AT today"
         elif weekday == 5: msg = "Fish AT today\nDGS AT today\nLib AT today"
         elif weekday == 6: msg = "Anth AT today"
-        
-        # LOGIC FIX: Always update MOTD. If no msg, clear it.
-        if msg:
-            state["motd"] = msg
-        else:
-            state["motd"] = ""
-            
+        if msg: state["motd"] = msg
+        else: state["motd"] = ""
         state["last_motd_date"] = today_str
         save_state(state)
-        
         if is_time and msg:
             chan = bot.get_channel(PINNED_CHANNEL_ID)
             if chan: await chan.send(f"📢 **DAILY REMINDER**\n{msg}")
-        
         await update_dashboards()
 
 @bot.tree.command(name="refresh", description="Force update")
@@ -593,48 +702,30 @@ async def on_ready():
     if not hourly_state_backup.is_running(): hourly_state_backup.start()
     if not channel_wiper.is_running(): channel_wiper.start()
     if not github_monitor.is_running(): github_monitor.start()
-    
     chan = bot.get_channel(PINNED_CHANNEL_ID)
     if chan: await chan.send(f"🤖 **JEFFBANK IS AWAKE** ({BOT_VERSION})")
 
 @tasks.loop(minutes=60)
 async def background_sheet_check(): await run_sheet_check(False)
 
-# UPDATED WIPER LOGIC: 12 PM Threshold
 @tasks.loop(minutes=2)
 async def channel_wiper():
     try:
         channel = bot.get_channel(PINNED_CHANNEL_ID)
         if not channel: return
-        
         now = get_gb_time()
-        # Midnight today (e.g., 00:00:00 on Tuesday)
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Determine the cutoff time based on current hour
-        if now.hour >= 12:
-            # It's after noon. Cutoff is midnight today.
-            # (Delete everything from yesterday and before)
-            cutoff = today_midnight
-        else:
-            # It's before noon. Cutoff is midnight yesterday.
-            # (Keep yesterday, delete older)
-            cutoff = today_midnight - timedelta(days=1)
-
+        if now.hour >= 12: cutoff = today_midnight
+        else: cutoff = today_midnight - timedelta(days=1)
         def should_delete(m):
             if m.pinned: return False
-            # Check if message is older than cutoff
-            # Note: m.created_at is UTC. Convert to GB_TZ to compare.
             msg_time = m.created_at.astimezone(GB_TZ)
             return msg_time < cutoff
-
         await channel.purge(limit=500, check=should_delete)
-    except Exception as e:
-        logger.error(f"Wipe error: {e}")
+    except Exception as e: logger.error(f"Wipe error: {e}")
 
 @tasks.loop(minutes=5)
 async def github_monitor():
-    """Checks for updates from GitHub Raw Link and restarts if found"""
     if not UPDATE_URL: return
     try:
         r = requests.get(UPDATE_URL + f"?t={int(time.time())}")
@@ -655,10 +746,7 @@ async def timer_monitor():
     timers = state.get("timers", {})
     dirty = False
     now = int(time.time())
-    
     for name, data in list(timers.items()):
-        
-        # 1. Check for Running -> Expired
         if data['status'] == 'running' and now >= data['end_time']:
             channel = bot.get_channel(PINNED_CHANNEL_ID)
             if channel:
@@ -670,40 +758,35 @@ async def timer_monitor():
                     else:
                         msg = await channel.send(f"⏰ **{d_name} IS UP!** {ping}")
                         await log_to_channel("Timer Expired", f"{d_name} expired", discord.Color.gold())
-                    if "hidden" in data and data['hidden']:
-                        del timers[name]
-                    else:
-                        data['status'] = 'expired'
-                        data['msg_id'] = msg.id 
+                    if "hidden" in data and data['hidden']: del timers[name]
+                    else: data['status'] = 'expired'; data['msg_id'] = msg.id 
                     dirty = True
                 except: pass
-        
-        # 2. Check for Expired -> Auto-Delete
         elif data['status'] == 'expired':
-            
-            # A) Fast cleanup (1 hour) for seedbed/kq
+            # Cleanup Logic
+            delete = False
+            # 1. Short Term (1h)
             if any(name.startswith(p) for p in ["seedbed", "kq"]):
-                if now > (data['end_time'] + 3600): # 1 hr
-                    del timers[name]
-                    dirty = True
-                    
-            # B) Slow cleanup (24 hours) for demo/tt
+                if now > (data['end_time'] + 3600): delete = True
+            # 2. Medium Term (24h)
             elif any(name.startswith(p) for p in ["demo", "tt_"]):
-                if now > (data['end_time'] + 86400): # 24 hr
-                    del timers[name]
-                    dirty = True
-
+                if now > (data['end_time'] + 86400): delete = True
+            # 3. Long Term (72h) - Wipe everything else if it's super old
+            else:
+                if now > (data['end_time'] + 259200): delete = True # 3 days
+            
+            if delete:
+                del timers[name]
+                dirty = True
     if dirty:
         save_state(state)
         await update_dashboards()
 
 @tasks.loop(minutes=10)
 async def update_pinned_message(): await update_dashboards()
-
 @tasks.loop(hours=1)
 async def hourly_state_backup():
-    state = load_state()
-    state_str = json.dumps(state, indent=2)
+    state = load_state(); state_str = json.dumps(state, indent=2)
     if len(state_str) > 1900: state_str = state_str[:1900] + "\n...[TRUNCATED]"
     await log_to_channel("Hourly State Backup", f"```json\n{state_str}\n```", discord.Color.dark_grey())
 
@@ -711,27 +794,20 @@ async def run_sheet_check(manual):
     client = get_gspread_client()
     if not client: return
     try:
-        sheet = client.open(SHEET_NAME).worksheet(TAB_FORM)
-        all_rows = sheet.get_all_values()
-        current = len(all_rows)
-        state = load_state()
-        last = max(state.get("last_form_row", 1), 1)
-        count = 0
+        sheet = client.open(SHEET_NAME).worksheet(TAB_FORM); all_rows = sheet.get_all_values()
+        current = len(all_rows); state = load_state(); last = max(state.get("last_form_row", 1), 1); count = 0
         if current > last:
             chan = bot.get_channel(PINNED_CHANNEL_ID)
             for i in range(last, current):
-                r = all_rows[i]
+                r = all_rows[i]; 
                 if not any(r): continue
                 while len(r) < 5: r.append("")
                 embed = discord.Embed(title="💸 Form Update", color=discord.Color.blue())
-                embed.add_field(name="Player", value=r[1])
-                embed.add_field(name="Gold", value=r[3])
-                embed.add_field(name="Type", value=r[2])
-                embed.set_footer(text=r[0])
+                embed.add_field(name="Player", value=r[1]); embed.add_field(name="Gold", value=r[3])
+                embed.add_field(name="Type", value=r[2]); embed.set_footer(text=r[0])
                 if chan: await chan.send(embed=embed)
                 count += 1
-            state["last_form_row"] = current
-            save_state(state)
+            state["last_form_row"] = current; save_state(state)
         if not manual: await log_to_channel("Sheet Check", f"Checked Form. Current Row: {current}. New Entries: {count}", discord.Color.light_gray())
     except Exception as e: await log_to_channel("Sheet Check Error", str(e), discord.Color.red())
 
@@ -741,8 +817,10 @@ async def update_dashboards():
     state = load_state()
     stats = get_financial_detailed()
     timers = state.get("timers", {})
+    debts = state.get("debts", {}) # Get Debt Info
     now_gb = get_gb_time()
     now_ts = int(time.time())
+    
     fin_lines = [HEADER_FIN]
     if stats:
         fin_lines.extend([
@@ -756,43 +834,37 @@ async def update_dashboards():
             f"**Month:** In {stats['month']['in']} | Out {stats['month']['out']} | Net {stats['month']['net']}",
             "---"
         ])
+        
+        # Add Debt Section if debts exist
+        active_debts = {k: v for k, v in debts.items() if v > 0}
+        if active_debts:
+            fin_lines.append("**Outstanding Loans:**")
+            for uid, amount in active_debts.items():
+                name = PLAYER_MAP.get(int(uid), "Unknown")
+                fin_lines.append(f"• {name}: {amount}g")
+    
     timer_lines = [HEADER_TIMER]
-    if state.get("motd"):
-        timer_lines.append(f"\n📢 **TODAY:**\n{state['motd']}\n")
-    list_today = []
-    list_later = []
-    list_done = []
+    if state.get("motd"): timer_lines.append(f"\n📢 **TODAY:**\n{state['motd']}\n")
+    list_today = []; list_later = []; list_done = []
     for name, data in sorted(timers.items(), key=lambda x: x[1].get('end_time', 0)):
         if data.get('hidden'): continue
         d_name = data.get('display', name.capitalize())
         if data['status'] == 'running':
             t_str = f"• **{d_name}**: <t:{data['end_time']}:R>"
-            if (data['end_time'] - now_ts) > 86400:
-                list_later.append(t_str)
-            else:
-                list_today.append(t_str)
-        elif data['status'] == 'expired':
-            list_done.append(f"• **{d_name}** (<t:{data['end_time']}:R>)")
-    timer_lines.append("**Timers (Today)**")
-    timer_lines.extend(list_today if list_today else ["_None_"])
-    timer_lines.append("\n**Timers (1d+)**")
-    timer_lines.extend(list_later if list_later else ["_None_"])
-    timer_lines.append("\n**Timers (DONE)**")
-    timer_lines.extend(list_done if list_done else ["_None_"])
+            if (data['end_time'] - now_ts) > 86400: list_later.append(t_str)
+            else: list_today.append(t_str)
+        elif data['status'] == 'expired': list_done.append(f"• **{d_name}** (<t:{data['end_time']}:R>)")
+    timer_lines.append("**Timers (Today)**"); timer_lines.extend(list_today if list_today else ["_None_"])
+    timer_lines.append("\n**Timers (1d+)**"); timer_lines.extend(list_later if list_later else ["_None_"])
+    timer_lines.append("\n**Timers (DONE)**"); timer_lines.extend(list_done if list_done else ["_None_"])
     try:
         history = await channel.pins()
         msg_fin = next((m for m in history if m.author == bot.user and HEADER_FIN in m.content), None)
-        if msg_fin:
-            await msg_fin.edit(content="\n".join(fin_lines))
-        else:
-            n = await channel.send("\n".join(fin_lines))
-            await n.pin()
+        if msg_fin: await msg_fin.edit(content="\n".join(fin_lines))
+        else: n = await channel.send("\n".join(fin_lines)); await n.pin()
         msg_tim = next((m for m in history if m.author == bot.user and HEADER_TIMER in m.content), None)
-        if msg_tim:
-            await msg_tim.edit(content="\n".join(timer_lines))
-        else:
-            n = await channel.send("\n".join(timer_lines))
-            await n.pin()
+        if msg_tim: await msg_tim.edit(content="\n".join(timer_lines))
+        else: n = await channel.send("\n".join(timer_lines)); await n.pin()
     except: pass
 
 bot.run(TOKEN)
