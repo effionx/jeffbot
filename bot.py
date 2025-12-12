@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.09"
+BOT_VERSION = "v0.1"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,7 +119,7 @@ def load_state():
     defaults = {
         "timers": {}, "custom_cmds": {}, "standard_overrides": {}, 
         "motd": "", "last_motd_date": "", "last_form_row": 1, 
-        "vacation": [], "debts": {} 
+        "vacation": [], "debts": {}, "bump": {} 
     }
     if not os.path.exists(STATE_FILE): return defaults
     try:
@@ -568,6 +568,7 @@ async def slash_help(interaction: discord.Interaction):
         embed.add_field(name="⚡ Custom", value=", ".join([f"`!{k}` ({v})" for k, v in customs.items()]), inline=False)
     embed.add_field(name="🛠 Admin", value="`!ct`, `!et`, `!dt`, `!rt`, `!setrow`, `!tt`, `/createdemo`, `/prune`, `!lt`, `!update`", inline=False)
     embed.add_field(name="💰 Bank", value="`/bank`, `/deposit`, `/withdraw`, `/lend`, `/return`", inline=False)
+    embed.add_field(name="🔔 Bump", value="`/bump [link] [timer]`, `/bumpoff`", inline=False)
     embed.add_field(name="🌴 Misc", value="`/v` (Toggle Vacation)", inline=False)
     await interaction.response.send_message(embed=embed)
 
@@ -625,6 +626,60 @@ async def prune(interaction: discord.Interaction):
     await interaction.channel.purge(limit=None, check=lambda m: not m.pinned)
     await interaction.followup.send("🧹 Channel pruned (Pins protected).", ephemeral=True)
 
+@bot.tree.command(name="bump", description="Set up bump reminders")
+@app_commands.describe(link="Discord thread/channel link", timer="Timer (e.g., 2h, 1d, 30m)")
+async def bump(interaction: discord.Interaction, link: str, timer: str):
+    await interaction.response.defer()
+    
+    # Parse timer
+    dur = parse_duration_string(timer)
+    if not dur:
+        return await interaction.followup.send("❌ Invalid timer format. Use format like `2h`, `1d`, `30m`")
+    
+    interval_seconds = int(dur.total_seconds())
+    if interval_seconds < 60:
+        return await interaction.followup.send("❌ Timer must be at least 1 minute.")
+    
+    # Validate link format (basic check)
+    if not link.startswith("https://discord.com/channels/"):
+        return await interaction.followup.send("❌ Invalid Discord link. Must start with `https://discord.com/channels/`")
+    
+    # Save bump configuration
+    state = load_state()
+    state["bump"] = {
+        "link": link,
+        "interval": interval_seconds,
+        "last_run": int(time.time()),  # Start counting from now
+        "timer_str": timer
+    }
+    save_state(state)
+    
+    await interaction.followup.send(
+        f"✅ **Bump Reminders Configured**\n"
+        f"📍 Link: {link}\n"
+        f"⏰ Interval: {timer}\n"
+        f"👥 Will ping: {get_ping_string()}\n"
+        f"Next bump: <t:{int(time.time() + interval_seconds)}:R>"
+    )
+    await log_to_channel(
+        "Bump Configured", 
+        f"Bump reminders set by {interaction.user.name}\nLink: {link}\nInterval: {timer}", 
+        discord.Color.blue()
+    )
+
+@bot.tree.command(name="bumpoff", description="Turn off bump reminders")
+async def bumpoff(interaction: discord.Interaction):
+    state = load_state()
+    
+    if not state.get("bump"):
+        return await interaction.response.send_message("❌ No bump reminders are currently configured.", ephemeral=True)
+    
+    state["bump"] = {}
+    save_state(state)
+    
+    await interaction.response.send_message("✅ Bump reminders disabled.", ephemeral=True)
+    await log_to_channel("Bump Disabled", f"Bump reminders disabled by {interaction.user.name}", discord.Color.orange())
+
 @bot.tree.command(name="deposit", description="Log deposit")
 @app_commands.choices(type=[app_commands.Choice(name=k, value=k) for k in ["Larders", "Dungeon", "Crafting", "Donation", "Traderun", "Loyalty", "Other"]])
 async def deposit(interaction: discord.Interaction, type: app_commands.Choice[str], gold: int, description: str = ""):
@@ -679,6 +734,42 @@ async def scheduler_task():
             if chan: await chan.send(f"📢 **DAILY REMINDER**\n{msg}")
         await update_dashboards()
 
+@tasks.loop(seconds=30)
+async def bump_monitor():
+    """Check if it's time to send bump reminders"""
+    state = load_state()
+    bump_config = state.get("bump", {})
+    
+    if not bump_config:
+        return  # No bump configured
+    
+    now = int(time.time())
+    last_run = bump_config.get("last_run", 0)
+    interval = bump_config.get("interval", 0)
+    link = bump_config.get("link", "")
+    
+    if interval == 0 or not link:
+        return  # Invalid configuration
+    
+    # Check if it's time to bump
+    if now >= (last_run + interval):
+        channel = bot.get_channel(PINNED_CHANNEL_ID)
+        if channel:
+            try:
+                ping = get_ping_string()
+                await channel.send(
+                    f"🔔 **BUMPY TIME!**\n"
+                    f"{ping} - Time to bump!\n"
+                    f"Thread: {link}"
+                )
+                
+                # Update last_run time
+                state["bump"]["last_run"] = now
+                save_state(state)
+                
+            except Exception as e:
+                logger.error(f"Bump reminder error: {e}")
+
 @bot.tree.command(name="refresh", description="Force update")
 async def refresh(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -702,6 +793,7 @@ async def on_ready():
     if not hourly_state_backup.is_running(): hourly_state_backup.start()
     if not channel_wiper.is_running(): channel_wiper.start()
     if not github_monitor.is_running(): github_monitor.start()
+    if not bump_monitor.is_running(): bump_monitor.start()
     chan = bot.get_channel(PINNED_CHANNEL_ID)
     if chan: await chan.send(f"🤖 **JEFFBANK IS AWAKE** ({BOT_VERSION})")
 
