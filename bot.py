@@ -433,6 +433,63 @@ async def set_row(ctx, row: int=None):
     await ctx.send(f"🛠 Row count changed from `{old_row}` to `{row}`.")
     await log_to_channel("Row Updated", f"Changed from {old_row} to {row} by {ctx.author.name}", discord.Color.orange())
 
+@bot.command(name="migratedemos")
+async def migrate_demos(ctx):
+    """Migrate existing demos to new alert schedule (24h, 6h, 3h, 30m)"""
+    state = load_state()
+    timers = state.get("timers", {})
+    now = int(time.time())
+    
+    # Find all main demo timers
+    main_demos = {k: v for k, v in timers.items() if k.startswith("demo_") and k.endswith("_main")}
+    
+    if not main_demos:
+        return await ctx.send("❌ No active demos found to migrate.")
+    
+    migrated_count = 0
+    for demo_key, demo_data in main_demos.items():
+        if demo_data['status'] != 'running':
+            continue
+            
+        # Extract location name from key (demo_{location}_main)
+        location = demo_key[5:-5]  # Remove "demo_" prefix and "_main" suffix
+        demo_time = demo_data['end_time']
+        
+        # Delete old alert timers (3h, 1h, 10m, and any other variants)
+        old_alerts = [k for k in timers.keys() if k.startswith(f"demo_{location}_") and k != demo_key]
+        for old_key in old_alerts:
+            del timers[old_key]
+        
+        # Create new alert timers (24h, 6h, 3h, 30m)
+        for hours, label in [(24, "24h"), (6, "6h"), (3, "3h")]:
+            alert_time = demo_time - (hours * 3600)
+            if alert_time > now:
+                timers[f"demo_{location}_{label}"] = {
+                    "end_time": alert_time,
+                    "channel_id": PINNED_CHANNEL_ID,
+                    "status": "running",
+                    "display": f"Demo Alert {location} {label}",
+                    "hidden": True
+                }
+        
+        # Add 30m alert
+        alert_30m = demo_time - (30 * 60)
+        if alert_30m > now:
+            timers[f"demo_{location}_30m"] = {
+                "end_time": alert_30m,
+                "channel_id": PINNED_CHANNEL_ID,
+                "status": "running",
+                "display": f"Demo Alert {location} 30m",
+                "hidden": True
+            }
+        
+        migrated_count += 1
+    
+    save_state(state)
+    await update_dashboards()
+    await ctx.send(f"✅ Migrated {migrated_count} demo(s) to new alert schedule (24h, 6h, 3h, 30m).")
+    await log_to_channel("Demos Migrated", f"{migrated_count} demos migrated to new alerts by {ctx.author.name}", discord.Color.blue())
+
 # --- SLASH COMMANDS ---
 @bot.tree.command(name="lend", description="Borrow gold from bank")
 async def lend(interaction: discord.Interaction, amount: int):
