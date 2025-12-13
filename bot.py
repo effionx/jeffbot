@@ -598,7 +598,7 @@ async def createdemo(interaction: discord.Interaction, location: str, datetime_s
         dt = GB_TZ.localize(datetime.strptime(datetime_str, "%d.%m.%Y %H:%M"))
     except ValueError:
         return await interaction.followup.send("❌ Invalid format. Use `DD.MM.YYYY HH:MM`")
-    t_3h, t_1h, t_10m = dt-timedelta(hours=3), dt-timedelta(hours=1), dt-timedelta(minutes=10)
+    t_24h, t_6h, t_3h, t_30m = dt-timedelta(hours=24), dt-timedelta(hours=6), dt-timedelta(hours=3), dt-timedelta(minutes=30)
     now = get_gb_time()
     forum = bot.get_channel(DEMO_FORUM_ID)
     if forum and isinstance(forum, discord.ForumChannel):
@@ -608,7 +608,7 @@ async def createdemo(interaction: discord.Interaction, location: str, datetime_s
         state['timers'][f"demo_{location}_main"] = {
             "end_time": int(dt.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo {location}", "hidden": False
         }
-    for lbl, obj in [("3h", t_3h), ("1h", t_1h), ("10m", t_10m)]:
+    for lbl, obj in [("24h", t_24h), ("6h", t_6h), ("3h", t_3h), ("30m", t_30m)]:
         if obj > now:
             state['timers'][f"demo_{location}_{lbl}"] = {
                 "end_time": int(obj.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo Alert {location} {lbl}", "hidden": True
