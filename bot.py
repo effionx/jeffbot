@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.1"
+BOT_VERSION = "v0.2"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,6 +103,37 @@ def get_gspread_client():
         creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
         return gspread.authorize(creds)
     except: return None
+
+def append_row_manual(client, tab_name, row_data):
+    """
+    Manually determines the next empty row to prevent overwriting.
+    Logs the exact cell coordinates for debugging.
+    """
+    try:
+        wb = client.open(SHEET_NAME)
+        sheet = wb.worksheet(tab_name)
+        
+        # 1. Get all current data to find the length
+        existing_data = sheet.get_all_values()
+        next_row = len(existing_data) + 1
+        
+        # 2. Calculate target range (e.g., A50:E50)
+        # Assuming data starts at Column A and row_data has 'n' items
+        # ord('A') is 65. If len is 5, we want E (69). 65 + 5 - 1 = 69.
+        end_col_char = chr(65 + len(row_data) - 1) 
+        target_range = f"A{next_row}:{end_col_char}{next_row}"
+        
+        # 3. Write data to specific range
+        # Note: Using keyword args for compatibility with recent gspread versions
+        sheet.update(range_name=target_range, values=[row_data])
+        
+        # 4. Success Log
+        logger.info(f"✅ [SHEET INSERT] Tab: '{tab_name}' | Row: {next_row} | Range: {target_range} | Data: {row_data}")
+        return next_row
+        
+    except Exception as e:
+        logger.error(f"❌ [SHEET ERROR] Failed to insert at '{tab_name}': {e}")
+        raise e
 
 async def log_to_channel(title, description, color=discord.Color.light_grey):
     channel = bot.get_channel(LOG_CHANNEL_ID)
@@ -531,15 +562,15 @@ async def lend(interaction: discord.Interaction, amount: int):
             "channel_id": PINNED_CHANNEL_ID, 
             "status": "running", 
             "display": f"Loan Due ({interaction.user.display_name})", 
-            "hidden": True  # <--- CHANGED TO TRUE
+            "hidden": True
         }
         save_state(state)
         
         # Log to Sheet (Withdraw)
         ts = get_gb_time().strftime("%Y-%m-%d %H:%M:%S")
-        sheet = client.open(SHEET_NAME).worksheet(TAB_DISCORD)
         player = get_mapped_name(interaction.user)
-        sheet.append_row([ts, player, "Withdraw", -amount, "Loan"])
+        # UPDATED: Use manual append
+        append_row_manual(client, TAB_DISCORD, [ts, player, "Withdraw", -amount, "Loan"])
         
         # Reply
         await interaction.followup.send(f"✅ **Loan Approved**: {amount}g sent to {player}. Due in 20 days.")
@@ -577,9 +608,9 @@ async def return_loan(interaction: discord.Interaction, amount: int):
         # 3. Log to Sheet (Deposit)
         client = get_gspread_client()
         ts = get_gb_time().strftime("%Y-%m-%d %H:%M:%S")
-        sheet = client.open(SHEET_NAME).worksheet(TAB_DISCORD)
         player = get_mapped_name(interaction.user)
-        sheet.append_row([ts, player, "Deposit", amount, "Loan Return"])
+        # UPDATED: Use manual append
+        append_row_manual(client, TAB_DISCORD, [ts, player, "Deposit", amount, "Loan Return"])
         
         msg = f"✅ **Returned**: {amount}g."
         if new_debt > 0: msg += f" Remaining Debt: {new_debt}g."
@@ -753,9 +784,10 @@ async def handle_transaction(interaction, type_str, gold_amt, desc_str):
     if not client: return await interaction.followup.send("❌ DB Error")
     try:
         ts = get_gb_time().strftime("%Y-%m-%d %H:%M:%S")
-        sheet = client.open(SHEET_NAME).worksheet(TAB_DISCORD)
         player = get_mapped_name(interaction.user)
-        sheet.append_row([ts, player, type_str, gold_amt, desc_str])
+        # UPDATED: Use manual append
+        append_row_manual(client, TAB_DISCORD, [ts, player, type_str, gold_amt, desc_str])
+        
         color = discord.Color.green() if gold_amt > 0 else discord.Color.red()
         embed = discord.Embed(title=f"💰 {type_str}", color=color)
         embed.add_field(name="Player", value=player)
