@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.2"
+BOT_VERSION = "v0.3"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,12 +97,25 @@ def parse_sheet_timestamp(ts_str):
         return GB_TZ.localize(dt) if dt.tzinfo is None else dt.astimezone(GB_TZ)
     except: return None
 
+# --- CACHED GSPREAD CLIENT ---
+_gspread_client = None
+_gspread_client_time = 0
+_GSPREAD_TTL = 1800  # Re-auth every 30 minutes
+
 def get_gspread_client():
+    global _gspread_client, _gspread_client_time
+    now = time.time()
+    if _gspread_client and (now - _gspread_client_time) < _GSPREAD_TTL:
+        return _gspread_client
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
-        return gspread.authorize(creds)
-    except: return None
+        _gspread_client = gspread.authorize(creds)
+        _gspread_client_time = now
+        return _gspread_client
+    except:
+        _gspread_client = None
+        return None
 
 def append_row_manual(client, tab_name, row_data):
     """
@@ -145,30 +158,50 @@ async def log_to_channel(title, description, color=discord.Color.light_grey):
 
 def get_mapped_name(user: discord.User): return PLAYER_MAP.get(user.id, user.display_name)
 
-# --- STATE MANAGEMENT ---
+# --- STATE MANAGEMENT (IN-MEMORY CACHE) ---
+_state_cache = None
+_state_dirty = False
+
 def load_state():
+    global _state_cache
+    if _state_cache is not None:
+        return _state_cache
     defaults = {
         "timers": {}, "custom_cmds": {}, "standard_overrides": {}, 
         "motd": "", "last_motd_date": "", "last_form_row": 1, 
         "vacation": [], "debts": {}, "bump": {} 
     }
-    if not os.path.exists(STATE_FILE): return defaults
+    if not os.path.exists(STATE_FILE):
+        _state_cache = defaults
+        return defaults
     try:
         with open(STATE_FILE, 'r') as f:
             data = json.load(f)
             for k, v in defaults.items(): 
                 if k not in data: data[k] = v
+            _state_cache = data
             return data
     except Exception as e:
         logger.error(f"State corrupted: {e}")
+        _state_cache = defaults
         return defaults
 
 def save_state(state):
+    global _state_cache, _state_dirty
+    _state_cache = state
+    _state_dirty = True
+
+def _flush_state():
+    """Write cached state to disk. Called periodically instead of on every save."""
+    global _state_dirty
+    if not _state_dirty or _state_cache is None:
+        return
     try:
         with open(STATE_FILE, 'w') as f:
-            json.dump(state, f, indent=4)
+            json.dump(_state_cache, f, indent=4)
+        _state_dirty = False
     except Exception as e:
-        logger.error(f"Failed to save state: {e}")
+        logger.error(f"Failed to flush state: {e}")
 
 def get_ping_string():
     state = load_state()
@@ -191,9 +224,18 @@ def get_gbank_balance(client=None):
     except:
         return 0
 
-def get_financial_detailed():
+# --- CACHED FINANCIAL DATA ---
+_financial_cache = None
+_financial_cache_time = 0
+_FINANCIAL_TTL = 300  # Cache financial data for 5 minutes
+
+def get_financial_detailed(force=False):
+    global _financial_cache, _financial_cache_time
+    now = time.time()
+    if not force and _financial_cache and (now - _financial_cache_time) < _FINANCIAL_TTL:
+        return _financial_cache
     client = get_gspread_client()
-    if not client: return None
+    if not client: return _financial_cache  # Return stale cache if available
     stats = {
         "gbank_val": "Error", "today": {"in": 0, "out": 0, "net": 0},
         "week": {"in": 0, "out": 0, "net": 0}, "month": {"in": 0, "out": 0, "net": 0},
@@ -253,6 +295,8 @@ def get_financial_detailed():
             stats["top_categories"] = " | ".join([f"{n} ({(v/total_income_all_time)*100:.1f}%)" for n,v in sorted_cats[:3]])
         else: stats["top_categories"] = "None"
     except Exception as e: logger.error(f"Fin stats error: {e}")
+    _financial_cache = stats
+    _financial_cache_time = time.time()
     return stats
 
 # --- TIMER LOGIC ---
@@ -341,8 +385,7 @@ async def manual_update_check(ctx):
     if not UPDATE_URL: return await ctx.send("❌ No Update URL configured.")
     msg = await ctx.send("🔄 Checking GitHub for updates...")
     try:
-        # Add timestamp to bypass local caching
-        r = requests.get(UPDATE_URL + f"?t={int(time.time())}")
+        r = await asyncio.to_thread(requests.get, UPDATE_URL + f"?t={int(time.time())}")
         if r.status_code == 200:
             new_code = r.text
             current_code = ""
@@ -863,7 +906,7 @@ async def bump_monitor():
 async def refresh(interaction: discord.Interaction):
     await interaction.response.defer()
     await run_sheet_check(True)
-    await update_dashboards()
+    await update_dashboards(force_financial=True)
     await interaction.followup.send("Updated.")
 
 @bot.event
@@ -883,6 +926,7 @@ async def on_ready():
     if not channel_wiper.is_running(): channel_wiper.start()
     if not github_monitor.is_running(): github_monitor.start()
     if not bump_monitor.is_running(): bump_monitor.start()
+    if not state_flusher.is_running(): state_flusher.start()
     chan = bot.get_channel(PINNED_CHANNEL_ID)
     if chan: await chan.send(f"🤖 **JEFFBANK IS AWAKE** ({BOT_VERSION})")
 
@@ -909,7 +953,7 @@ async def channel_wiper():
 async def github_monitor():
     if not UPDATE_URL: return
     try:
-        r = requests.get(UPDATE_URL + f"?t={int(time.time())}")
+        r = await asyncio.to_thread(requests.get, UPDATE_URL + f"?t={int(time.time())}")
         if r.status_code == 200:
             new_code = r.text
             current_code = ""
@@ -923,7 +967,7 @@ async def github_monitor():
 
 @tasks.loop(seconds=1)
 async def timer_monitor():
-    state = load_state()
+    state = load_state()  # In-memory cache, no disk I/O
     timers = state.get("timers", {})
     dirty = False
     now = int(time.time())
@@ -938,7 +982,7 @@ async def timer_monitor():
                         msg = await channel.send(f"⚠️ **ALERT:** {d_name} is coming up! {ping}")
                     else:
                         msg = await channel.send(f"⏰ **{d_name} IS UP!** {ping}")
-                        await log_to_channel("Timer Expired", f"{d_name} expired", discord.Color.gold())
+                        asyncio.create_task(log_to_channel("Timer Expired", f"{d_name} expired", discord.Color.gold()))
                     if "hidden" in data and data['hidden']: del timers[name]
                     else: data['status'] = 'expired'; data['msg_id'] = msg.id 
                     dirty = True
@@ -960,13 +1004,19 @@ async def timer_monitor():
                 del timers[name]
                 dirty = True
     if dirty:
-        save_state(state)
-        await update_dashboards()
+        save_state(state)  # In-memory only, flushed to disk by state_flusher
+        # Offload dashboard update to background so it never delays the next timer tick
+        asyncio.create_task(update_dashboards(skip_financials=True))
 
 @tasks.loop(minutes=10)
-async def update_pinned_message(): await update_dashboards()
+async def update_pinned_message(): await update_dashboards(force_financial=True)
+@tasks.loop(seconds=30)
+async def state_flusher():
+    """Periodically flush in-memory state to disk."""
+    _flush_state()
 @tasks.loop(hours=1)
 async def hourly_state_backup():
+    _flush_state()  # Ensure state is saved before backup
     state = load_state(); state_str = json.dumps(state, indent=2)
     if len(state_str) > 1900: state_str = state_str[:1900] + "\n...[TRUNCATED]"
     await log_to_channel("Hourly State Backup", f"```json\n{state_str}\n```", discord.Color.dark_grey())
@@ -992,11 +1042,15 @@ async def run_sheet_check(manual):
         if not manual: await log_to_channel("Sheet Check", f"Checked Form. Current Row: {current}. New Entries: {count}", discord.Color.light_gray())
     except Exception as e: await log_to_channel("Sheet Check Error", str(e), discord.Color.red())
 
-async def update_dashboards():
+# --- CACHED PINNED MESSAGES ---
+_pinned_fin_msg = None
+_pinned_tim_msg = None
+
+async def update_dashboards(skip_financials=False, force_financial=False):
     channel = bot.get_channel(PINNED_CHANNEL_ID)
     if not channel: return
     state = load_state()
-    stats = get_financial_detailed()
+    stats = get_financial_detailed(force=force_financial) if not skip_financials else _financial_cache
     timers = state.get("timers", {})
     debts = state.get("debts", {}) # Get Debt Info
     now_gb = get_gb_time()
@@ -1039,13 +1093,25 @@ async def update_dashboards():
     timer_lines.append("\n**Timers (1d+)**"); timer_lines.extend(list_later if list_later else ["_None_"])
     timer_lines.append("\n**Timers (DONE)**"); timer_lines.extend(list_done if list_done else ["_None_"])
     try:
-        history = await channel.pins()
-        msg_fin = next((m for m in history if m.author == bot.user and HEADER_FIN in m.content), None)
-        if msg_fin: await msg_fin.edit(content="\n".join(fin_lines))
-        else: n = await channel.send("\n".join(fin_lines)); await n.pin()
-        msg_tim = next((m for m in history if m.author == bot.user and HEADER_TIMER in m.content), None)
-        if msg_tim: await msg_tim.edit(content="\n".join(timer_lines))
-        else: n = await channel.send("\n".join(timer_lines)); await n.pin()
-    except: pass
+        global _pinned_fin_msg, _pinned_tim_msg
+        # Only fetch pins if we don't have cached references
+        if not _pinned_fin_msg or not _pinned_tim_msg:
+            history = await channel.pins()
+            _pinned_fin_msg = next((m for m in history if m.author == bot.user and HEADER_FIN in m.content), None)
+            _pinned_tim_msg = next((m for m in history if m.author == bot.user and HEADER_TIMER in m.content), None)
+        if _pinned_fin_msg:
+            await _pinned_fin_msg.edit(content="\n".join(fin_lines))
+        else:
+            _pinned_fin_msg = await channel.send("\n".join(fin_lines))
+            await _pinned_fin_msg.pin()
+        if _pinned_tim_msg:
+            await _pinned_tim_msg.edit(content="\n".join(timer_lines))
+        else:
+            _pinned_tim_msg = await channel.send("\n".join(timer_lines))
+            await _pinned_tim_msg.pin()
+    except Exception:
+        # Reset cache on error so next call refetches
+        _pinned_fin_msg = None
+        _pinned_tim_msg = None
 
 bot.run(TOKEN)
