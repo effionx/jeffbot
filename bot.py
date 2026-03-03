@@ -385,7 +385,8 @@ async def manual_update_check(ctx):
     if not UPDATE_URL: return await ctx.send("❌ No Update URL configured.")
     msg = await ctx.send("🔄 Checking GitHub for updates...")
     try:
-        r = await asyncio.to_thread(requests.get, UPDATE_URL + f"?t={int(time.time())}")
+        loop = asyncio.get_event_loop()
+        r = await loop.run_in_executor(None, lambda: requests.get(UPDATE_URL + f"?t={int(time.time())}"))
         if r.status_code == 200:
             new_code = r.text
             current_code = ""
@@ -986,7 +987,8 @@ async def channel_wiper():
 async def github_monitor():
     if not UPDATE_URL: return
     try:
-        r = await asyncio.to_thread(requests.get, UPDATE_URL + f"?t={int(time.time())}")
+        loop = asyncio.get_event_loop()
+        r = await loop.run_in_executor(None, lambda: requests.get(UPDATE_URL + f"?t={int(time.time())}"))
         if r.status_code == 200:
             new_code = r.text
             current_code = ""
