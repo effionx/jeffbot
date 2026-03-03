@@ -509,7 +509,7 @@ async def set_row(ctx, row: int=None):
 
 @bot.command(name="migratedemos")
 async def migrate_demos(ctx):
-    """Migrate existing demos to new alert schedule (24h, 6h, 3h, 30m)"""
+    """Migrate existing demos: update alert schedule + link forum threads"""
     state = load_state()
     timers = state.get("timers", {})
     now = int(time.time())
@@ -520,7 +520,22 @@ async def migrate_demos(ctx):
     if not main_demos:
         return await ctx.send("❌ No active demos found to migrate.")
     
+    # Build a lookup of forum threads by location keyword
+    thread_lookup = {}
+    forum = bot.get_channel(DEMO_FORUM_ID)
+    if forum and isinstance(forum, discord.ForumChannel):
+        # Active (non-archived) threads
+        for thread in forum.threads:
+            thread_lookup[thread.name.lower()] = thread.id
+        # Also check recently archived threads
+        try:
+            async for thread in forum.archived_threads(limit=50):
+                thread_lookup[thread.name.lower()] = thread.id
+        except Exception:
+            pass
+    
     migrated_count = 0
+    linked_count = 0
     for demo_key, demo_data in main_demos.items():
         if demo_data['status'] != 'running':
             continue
@@ -529,12 +544,26 @@ async def migrate_demos(ctx):
         location = demo_key[5:-5]  # Remove "demo_" prefix and "_main" suffix
         demo_time = demo_data['end_time']
         
+        # --- Thread linking: find matching forum thread ---
+        thread_id = demo_data.get('thread_id')
+        if not thread_id:
+            # Search thread names for the location keyword
+            for thread_name, tid in thread_lookup.items():
+                if location.lower() in thread_name:
+                    thread_id = tid
+                    break
+            if thread_id:
+                linked_count += 1
+        
+        # Apply thread_id to main timer
+        demo_data['thread_id'] = thread_id
+        
         # Delete old alert timers (3h, 1h, 10m, and any other variants)
         old_alerts = [k for k in timers.keys() if k.startswith(f"demo_{location}_") and k != demo_key]
         for old_key in old_alerts:
             del timers[old_key]
         
-        # Create new alert timers (24h, 6h, 3h, 30m)
+        # Create new alert timers (24h, 6h, 3h, 30m) with thread_id
         for hours, label in [(24, "24h"), (6, "6h"), (3, "3h")]:
             alert_time = demo_time - (hours * 3600)
             if alert_time > now:
@@ -543,7 +572,8 @@ async def migrate_demos(ctx):
                     "channel_id": PINNED_CHANNEL_ID,
                     "status": "running",
                     "display": f"Demo Alert {location} {label}",
-                    "hidden": True
+                    "hidden": True,
+                    "thread_id": thread_id
                 }
         
         # Add 30m alert
@@ -554,15 +584,16 @@ async def migrate_demos(ctx):
                 "channel_id": PINNED_CHANNEL_ID,
                 "status": "running",
                 "display": f"Demo Alert {location} 30m",
-                "hidden": True
+                "hidden": True,
+                "thread_id": thread_id
             }
         
         migrated_count += 1
     
     save_state(state)
     await update_dashboards()
-    await ctx.send(f"✅ Migrated {migrated_count} demo(s) to new alert schedule (24h, 6h, 3h, 30m).")
-    await log_to_channel("Demos Migrated", f"{migrated_count} demos migrated to new alerts by {ctx.author.name}", discord.Color.blue())
+    await ctx.send(f"✅ Migrated {migrated_count} demo(s) to new alert schedule.\n🔗 Linked {linked_count} demo(s) to forum threads.")
+    await log_to_channel("Demos Migrated", f"{migrated_count} demos migrated, {linked_count} threads linked by {ctx.author.name}", discord.Color.blue())
 
 # --- SLASH COMMANDS ---
 @bot.tree.command(name="lend", description="Borrow gold from bank")
@@ -732,17 +763,19 @@ async def createdemo(interaction: discord.Interaction, location: str, datetime_s
     t_24h, t_6h, t_3h, t_30m = dt-timedelta(hours=24), dt-timedelta(hours=6), dt-timedelta(hours=3), dt-timedelta(minutes=30)
     now = get_gb_time()
     forum = bot.get_channel(DEMO_FORUM_ID)
+    thread_id = None
     if forum and isinstance(forum, discord.ForumChannel):
-        await forum.create_thread(name=f"{location} - {dt.strftime('%d/%m')}", content=(f"**Demo Scheduled**\n📍 **Location:** {location}\n📅 **Time:** <t:{int(dt.timestamp())}:F>\n{get_ping_string()}"))
+        thread, _ = await forum.create_thread(name=f"{location} - {dt.strftime('%d/%m')}", content=(f"**Demo Scheduled**\n📍 **Location:** {location}\n📅 **Time:** <t:{int(dt.timestamp())}:F>\n{get_ping_string()}"))
+        thread_id = thread.id
     state = load_state()
     if dt > now:
         state['timers'][f"demo_{location}_main"] = {
-            "end_time": int(dt.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo {location}", "hidden": False
+            "end_time": int(dt.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo {location}", "hidden": False, "thread_id": thread_id
         }
     for lbl, obj in [("24h", t_24h), ("6h", t_6h), ("3h", t_3h), ("30m", t_30m)]:
         if obj > now:
             state['timers'][f"demo_{location}_{lbl}"] = {
-                "end_time": int(obj.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo Alert {location} {lbl}", "hidden": True
+                "end_time": int(obj.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo Alert {location} {lbl}", "hidden": True, "thread_id": thread_id
             }
     save_state(state)
     await update_dashboards()
@@ -973,7 +1006,14 @@ async def timer_monitor():
     now = int(time.time())
     for name, data in list(timers.items()):
         if data['status'] == 'running' and now >= data['end_time']:
-            channel = bot.get_channel(PINNED_CHANNEL_ID)
+            # For demo alerts/timers, prefer sending to the forum thread
+            demo_thread_id = data.get('thread_id')
+            if demo_thread_id and "demo" in name:
+                channel = bot.get_channel(demo_thread_id)
+                if not channel:  # Fallback if thread is unavailable
+                    channel = bot.get_channel(PINNED_CHANNEL_ID)
+            else:
+                channel = bot.get_channel(PINNED_CHANNEL_ID)
             if channel:
                 try:
                     d_name = data.get('display', name.capitalize())
