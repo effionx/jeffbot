@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.3"
+BOT_VERSION = "v0.5"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -564,9 +564,9 @@ async def migrate_demos(ctx):
         for old_key in old_alerts:
             del timers[old_key]
         
-        # Create new alert timers (24h, 6h, 3h, 30m) with thread_id
-        for hours, label in [(24, "24h"), (6, "6h"), (3, "3h")]:
-            alert_time = demo_time - (hours * 3600)
+        # Create new alert timers (24h, 4h, 30m, 15m, 5m) with thread_id
+        for seconds, label in [(24*3600, "24h"), (4*3600, "4h"), (30*60, "30m"), (15*60, "15m"), (5*60, "5m")]:
+            alert_time = demo_time - seconds
             if alert_time > now:
                 timers[f"demo_{location}_{label}"] = {
                     "end_time": alert_time,
@@ -576,18 +576,6 @@ async def migrate_demos(ctx):
                     "hidden": True,
                     "thread_id": thread_id
                 }
-        
-        # Add 30m alert
-        alert_30m = demo_time - (30 * 60)
-        if alert_30m > now:
-            timers[f"demo_{location}_30m"] = {
-                "end_time": alert_30m,
-                "channel_id": PINNED_CHANNEL_ID,
-                "status": "running",
-                "display": f"Demo Alert {location} 30m",
-                "hidden": True,
-                "thread_id": thread_id
-            }
         
         migrated_count += 1
     
@@ -761,7 +749,7 @@ async def createdemo(interaction: discord.Interaction, location: str, datetime_s
         dt = GB_TZ.localize(datetime.strptime(datetime_str, "%d.%m.%Y %H:%M"))
     except ValueError:
         return await interaction.followup.send("❌ Invalid format. Use `DD.MM.YYYY HH:MM`")
-    t_24h, t_6h, t_3h, t_30m = dt-timedelta(hours=24), dt-timedelta(hours=6), dt-timedelta(hours=3), dt-timedelta(minutes=30)
+    t_24h, t_4h, t_30m, t_15m, t_5m = dt-timedelta(hours=24), dt-timedelta(hours=4), dt-timedelta(minutes=30), dt-timedelta(minutes=15), dt-timedelta(minutes=5)
     now = get_gb_time()
     forum = bot.get_channel(DEMO_FORUM_ID)
     thread_id = None
@@ -773,7 +761,7 @@ async def createdemo(interaction: discord.Interaction, location: str, datetime_s
         state['timers'][f"demo_{location}_main"] = {
             "end_time": int(dt.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo {location}", "hidden": False, "thread_id": thread_id
         }
-    for lbl, obj in [("24h", t_24h), ("6h", t_6h), ("3h", t_3h), ("30m", t_30m)]:
+    for lbl, obj in [("24h", t_24h), ("4h", t_4h), ("30m", t_30m), ("15m", t_15m), ("5m", t_5m)]:
         if obj > now:
             state['timers'][f"demo_{location}_{lbl}"] = {
                 "end_time": int(obj.timestamp()), "channel_id": PINNED_CHANNEL_ID, "status": "running", "display": f"Demo Alert {location} {lbl}", "hidden": True, "thread_id": thread_id
