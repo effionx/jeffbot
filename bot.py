@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.5"
+BOT_VERSION = "v0.51"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -583,6 +583,48 @@ async def migrate_demos(ctx):
     await update_dashboards()
     await ctx.send(f"✅ Migrated {migrated_count} demo(s) to new alert schedule.\n🔗 Linked {linked_count} demo(s) to forum threads.")
     await log_to_channel("Demos Migrated", f"{migrated_count} demos migrated, {linked_count} threads linked by {ctx.author.name}", discord.Color.blue())
+
+@bot.command(name="shift")
+async def shift_demos(ctx, hours: int = -1):
+    """Shift all currently running demo timers by N hours (default: -1)."""
+    if hours == 0:
+        return await ctx.send("❌ Hours cannot be 0. Example: `!shift -1`")
+
+    state = load_state()
+    timers = state.get("timers", {})
+    now = int(time.time())
+    shift_seconds = hours * 3600
+
+    shifted = 0
+    skipped = 0
+    for name, data in timers.items():
+        if not name.startswith("demo_"):
+            continue
+        if data.get("status") != "running":
+            continue
+        if data.get("end_time", 0) <= now:
+            skipped += 1
+            continue
+
+        data["end_time"] = data.get("end_time", now) + shift_seconds
+        shifted += 1
+
+    if shifted == 0:
+        return await ctx.send("❌ No active demo timers found to shift.")
+
+    save_state(state)
+    await update_dashboards()
+
+    direction = "forward" if hours > 0 else "back"
+    await ctx.send(
+        f"✅ Shifted {shifted} active demo timer(s) {abs(hours)} hour(s) {direction}."
+        + (f"\n⚠️ Skipped {skipped} timer(s) already due/past due." if skipped else "")
+    )
+    await log_to_channel(
+        "Demos Shifted",
+        f"{ctx.author.name} shifted {shifted} active demo timer(s) by {hours} hour(s).",
+        discord.Color.orange()
+    )
 
 # --- SLASH COMMANDS ---
 @bot.tree.command(name="lend", description="Borrow gold from bank")
