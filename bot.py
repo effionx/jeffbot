@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 UPDATE_URL = "https://raw.githubusercontent.com/effionx/jeffbot/refs/heads/main/bot.py"
-BOT_VERSION = "v0.51"
+BOT_VERSION = "v0.51 (+fish)"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -876,7 +876,7 @@ async def bumpoff(interaction: discord.Interaction):
     await log_to_channel("Bump Disabled", f"Bump reminders disabled by {interaction.user.name}", discord.Color.orange())
 
 @bot.tree.command(name="deposit", description="Log deposit")
-@app_commands.choices(type=[app_commands.Choice(name=k, value=k) for k in ["Larders", "Dungeon", "Crafting", "Donation", "Traderun", "Loyalty", "Other"]])
+@app_commands.choices(type=[app_commands.Choice(name=k, value=k) for k in ["Fish", "Larders", "Dungeon", "Crafting", "Donation", "Traderun", "Loyalty", "Other"]])
 async def deposit(interaction: discord.Interaction, type: app_commands.Choice[str], gold: int, description: str = ""):
     await handle_transaction(interaction, type.value, gold, description)
 
